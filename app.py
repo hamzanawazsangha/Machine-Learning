@@ -72,13 +72,19 @@ if uploaded_file and target_col and run_button:
 
         with tab1:
             st.info("🔍 Analyzing Data...")
-            analysis_results = analyzer.analyze(df)
+            # Fix: Properly unpack the return values
+            analysis_results, analysis_plots = analyzer.analyze(df)
             
             # Show analysis results
             st.subheader("Data Summary")
             st.write(analysis_results['summary'])
             
             # Visualizations
+            st.subheader("Data Visualizations")
+            for plot in analysis_plots:
+                st.pyplot(plot)
+                
+            # Additional visualizations
             col1, col2 = st.columns(2)
             with col1:
                 st.subheader("Missing Values")
@@ -95,10 +101,12 @@ if uploaded_file and target_col and run_button:
                     sns.histplot(df[target_col], kde=True, ax=ax)
                 st.pyplot(fig)
             
-            st.subheader("Correlation Matrix")
-            fig, ax = plt.subplots(figsize=(10, 8))
-            sns.heatmap(df.corr(), annot=True, fmt=".2f", ax=ax)
-            st.pyplot(fig)
+            numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
+            if len(numeric_cols) > 1:
+                st.subheader("Correlation Matrix")
+                fig, ax = plt.subplots(figsize=(10, 8))
+                sns.heatmap(df[numeric_cols].corr(), annot=True, fmt=".2f", ax=ax)
+                st.pyplot(fig)
 
         with tab2:
             st.info("🔧 Preprocessing Data...")
@@ -110,20 +118,20 @@ if uploaded_file and target_col and run_button:
             st.write(f"Processed shape: {X.shape[0]} samples, {X.shape[1]} features")
             
             # Outlier visualization
-            if hasattr(preprocessor, 'outlier_plots'):
+            if hasattr(preprocessor, 'outlier_plots') and preprocessor.outlier_plots:
                 st.subheader("Outlier Treatment")
                 cols = st.columns(2)
-                for i, (col, fig) in enumerate(zip(cols, preprocessor.outlier_plots)):
-                    with col:
-                        st.pyplot(fig)
+                for i, plot in enumerate(preprocessor.outlier_plots):
+                    with cols[i % 2]:
+                        st.pyplot(plot)
             
             # Transformation visualization
-            if hasattr(preprocessor, 'transformation_plots'):
+            if hasattr(preprocessor, 'transformation_plots') and preprocessor.transformation_plots:
                 st.subheader("Feature Transformation")
                 cols = st.columns(2)
-                for i, (col, fig) in enumerate(zip(cols, preprocessor.transformation_plots)):
-                    with col:
-                        st.pyplot(fig)
+                for i, plot in enumerate(preprocessor.transformation_plots):
+                    with cols[i % 2]:
+                        st.pyplot(plot)
 
         with tab3:
             st.info("🛠️ Feature Engineering...")
@@ -156,7 +164,8 @@ if uploaded_file and target_col and run_button:
             # Model comparison
             st.subheader("Model Comparison")
             fig = trainer.plot_model_comparison()
-            st.pyplot(fig)
+            if fig:  # Check if figure exists before trying to display
+                st.pyplot(fig)
             
             # Best model details
             st.subheader("Best Model Performance")
@@ -166,31 +175,36 @@ if uploaded_file and target_col and run_button:
             # Confusion matrix for classification
             if task_type == "classification":
                 st.subheader("Confusion Matrix")
-                fig = trainer.plot_confusion_matrix(X_test, y_test)
-                st.pyplot(fig)
+                cm_fig = trainer.plot_confusion_matrix(X_test, y_test)
+                if cm_fig:
+                    st.pyplot(cm_fig)
             
             # Feature importance
             if hasattr(trainer.best_model, 'feature_importances_'):
                 st.subheader("Feature Importance")
-                fig = trainer.plot_feature_importance()
-                st.pyplot(fig)
+                fi_fig = trainer.plot_feature_importance()
+                if fi_fig:
+                    st.pyplot(fi_fig)
             
             # Download artifacts
             st.subheader("Download Pipeline")
-            zip_path = saver.save(
-                trainer.best_model, 
-                preprocessor, 
-                feature_engineer,
-                trainer.models
-            )
-            
-            with open(zip_path, "rb") as f:
-                st.download_button(
-                    "⬇️ Download Full Pipeline",
-                    f,
-                    file_name="automl_pipeline.zip",
-                    mime="application/zip"
+            try:
+                zip_path = saver.save(
+                    trainer.best_model, 
+                    preprocessor, 
+                    feature_engineer,
+                    trainer.models
                 )
+                
+                with open(zip_path, "rb") as f:
+                    st.download_button(
+                        "⬇️ Download Full Pipeline",
+                        f,
+                        file_name="automl_pipeline.zip",
+                        mime="application/zip"
+                    )
+            except Exception as e:
+                st.error(f"Failed to save pipeline: {str(e)}")
 
     except Exception as e:
         st.error(f"❌ Pipeline Error: {str(e)}")
