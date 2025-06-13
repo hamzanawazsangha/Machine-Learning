@@ -1,5 +1,3 @@
-# automl_pipeline.py
-
 import pandas as pd
 import numpy as np
 import os
@@ -11,7 +9,8 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import (
     accuracy_score, f1_score, roc_auc_score,
-    mean_squared_error, r2_score, mean_absolute_error
+    mean_squared_error, r2_score, mean_absolute_error,
+    confusion_matrix, classification_report
 )
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingClassifier, GradientBoostingRegressor
 from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso, ElasticNet
@@ -52,11 +51,16 @@ class DataPreprocessor:
             y = pd.Series(le.fit_transform(y), index=y.index)
             self.encoders['target'] = le
 
-        ohe = OneHotEncoder(handle_unknown='ignore', sparse=False)
-        X_encoded = pd.DataFrame(ohe.fit_transform(X[cat_cols]), columns=ohe.get_feature_names_out(cat_cols), index=X.index)
-        self.encoders['ohe'] = ohe
+        if cat_cols:
+            ohe = OneHotEncoder(handle_unknown='ignore', sparse=False)
+            X_encoded = pd.DataFrame(ohe.fit_transform(X[cat_cols]), 
+                                columns=ohe.get_feature_names_out(cat_cols), 
+                                index=X.index)
+            self.encoders['ohe'] = ohe
+            X_final = pd.concat([X[num_cols], X_encoded], axis=1).loc[y.index]
+        else:
+            X_final = X[num_cols].loc[y.index]
 
-        X_final = pd.concat([X[num_cols], X_encoded], axis=1).loc[y.index]
         return X_final, y
 
     def scale_and_split(self, X, y):
@@ -85,6 +89,7 @@ class ModelTrainer:
         self.best_model = None
         self.best_score = -float('inf') if task_type == 'classification' else float('inf')
         self.selected_metrics = metrics or []
+        self.models_dict = {}
 
     def select_models(self):
         classification_models = {
@@ -119,19 +124,20 @@ class ModelTrainer:
 
     def tune_and_train(self, X_train, y_train, X_test, y_test):
         total = len(self.models)
-        progress = st.progress(0)
-
+        
         for i, (model_name, model, param_grid) in enumerate(self.models):
             with st.spinner(f"🔍 Tuning {model_name}..."):
                 try:
                     if len(X_train) <= 100000:
                         search = GridSearchCV(model, param_grid, cv=5, n_jobs=-1, scoring=self._get_scoring())
                     else:
-                        search = RandomizedSearchCV(model, param_grid, n_iter=10, cv=5, n_jobs=-1, scoring=self._get_scoring(), random_state=42)
+                        search = RandomizedSearchCV(model, param_grid, n_iter=10, cv=5, n_jobs=-1, 
+                                                 scoring=self._get_scoring(), random_state=42)
 
                     search.fit(X_train, y_train)
                     score = search.score(X_test, y_test)
                     self.model_scores[model_name] = score
+                    self.models_dict[model_name] = search.best_estimator_
 
                     if self.task_type == 'classification':
                         if score > self.best_score:
@@ -144,13 +150,7 @@ class ModelTrainer:
 
                     st.success(f"✅ {model_name} Score: {score:.4f}")
                 except Exception as e:
-                    st.error(f"❌ Error with model {model_name}: {e}")
-            progress.progress((i + 1) / total)
-
-        if self.best_model is not None:
-            st.success(f"🏆 Best Model: {type(self.best_model).__name__} with score {self.best_score:.4f}")
-        else:
-            st.warning("⚠️ No model was successfully trained.")
+                    st.error(f"❌ Error with model {model_name}: {str(e)}")
 
     def _get_scoring(self):
         return 'accuracy' if self.task_type == 'classification' else 'neg_mean_squared_error'
@@ -162,17 +162,26 @@ class PipelineSaver:
         os.makedirs(self.path, exist_ok=True)
 
     def save(self, model, preprocessor):
-        joblib.dump(model, os.path.join(self.path, 'best_model.pkl'))
-        joblib.dump(preprocessor.scaler, os.path.join(self.path, 'scaler.pkl'))
+        model_path = os.path.join(self.path, 'best_model.pkl')
+        scaler_path = os.path.join(self.path, 'scaler.pkl')
+        
+        joblib.dump(model, model_path)
+        joblib.dump(preprocessor.scaler, scaler_path)
+        
         for name, enc in preprocessor.encoders.items():
-            joblib.dump(enc, os.path.join(self.path, f'{name}_encoder.pkl'))
+            enc_path = os.path.join(self.path, f'{name}_encoder.pkl')
+            joblib.dump(enc, enc_path)
+            
         if preprocessor.smote:
-            joblib.dump(preprocessor.smote, os.path.join(self.path, 'smote.pkl'))
+            smote_path = os.path.join(self.path, 'smote.pkl')
+            joblib.dump(preprocessor.smote, smote_path)
 
         zip_path = os.path.join(self.path, 'automl_artifacts.zip')
         with zipfile.ZipFile(zip_path, 'w') as zf:
             for root, _, files in os.walk(self.path):
                 for file in files:
                     if file.endswith('.pkl'):
-                        zf.write(os.path.join(root, file), arcname=file)
+                        file_path = os.path.join(root, file)
+                        zf.write(file_path, arcname=file)
+        
         return zip_path
