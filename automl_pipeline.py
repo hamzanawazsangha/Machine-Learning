@@ -88,76 +88,72 @@ class DataPreprocessor:
 
 
 class ModelTrainer:
-    def __init__(self, task_type, models='all'):
+    def __init__(self, task_type='classification', models='all'):
         self.task_type = task_type
-        self.models = models
-        self.selected_models = []
+        self.model_names = models
+        self.models = []
         self.best_model = None
+        self.best_score = -float('inf') if task_type == 'classification' else float('inf')
 
     def select_models(self):
-        if self.task_type == 'classification':
-            base_models = [
-                ('LogisticRegression', LogisticRegression(max_iter=500)),
-                ('RandomForest', RandomForestClassifier()),
-                ('XGBoost', XGBClassifier(use_label_encoder=False, eval_metric='logloss'))
-            ]
-        elif self.task_type == 'regression':
-            base_models = [
-                ('LinearRegression', LinearRegression()),
-                ('RandomForestRegressor', RandomForestRegressor()),
-                ('XGBRegressor', XGBRegressor())
-            ]
-        else:
-            raise ValueError("Unsupervised models not implemented yet")
+        from sklearn.linear_model import LogisticRegression, LinearRegression
+        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+        from xgboost import XGBClassifier, XGBRegressor
 
-        if self.models == 'all':
-            self.selected_models = base_models
+        all_models = {
+            'LogisticRegression': (LogisticRegression(), {'C': [0.1, 1, 10]}),
+            'RandomForest': (RandomForestClassifier(), {'n_estimators': [50, 100], 'max_depth': [5, 10]}),
+            'XGBoost': (XGBClassifier(eval_metric='mlogloss'), {'n_estimators': [50, 100], 'learning_rate': [0.01, 0.1]}),
+            'LinearRegression': (LinearRegression(), {}),
+            'RandomForestRegressor': (RandomForestRegressor(), {'n_estimators': [50, 100], 'max_depth': [5, 10]}),
+            'XGBRegressor': (XGBRegressor(), {'n_estimators': [50, 100], 'learning_rate': [0.01, 0.1]})
+        }
+
+        if self.model_names == 'all':
+            self.models = [v for k, v in all_models.items() if self.task_type in k.lower()]
         else:
-            self.selected_models = [m for m in base_models if m[0] in self.models]
+            self.models = [all_models[name] for name in self.model_names if name in all_models]
 
     def tune_and_train(self, X_train, y_train, X_test, y_test):
-        best_score = -np.inf
-        for name, model in self.selected_models:
-            print(f"Tuning model: {name}")
-            param_grid = self.get_params(name)
-            if len(X_train) <= 100000:
-                search = GridSearchCV(model, param_grid, cv=3, scoring=self.get_scoring(), n_jobs=-1)
-            else:
-                search = RandomizedSearchCV(model, param_grid, n_iter=10, cv=3, scoring=self.get_scoring(), n_jobs=-1)
+        total = len(self.models)
+        progress = st.progress(0)
 
-            search.fit(X_train, y_train)
-            preds = search.predict(X_test)
-            score = self.evaluate(y_test, preds)
-            print(f"{name} score: {score}")
+        for i, (model_name, model, param_grid) in enumerate(
+            [(name, m, p) for (m, p), name in zip(self.models, [name for name in (self.model_names if self.model_names != 'all' else [name for name in ['LogisticRegression','RandomForest','XGBoost','LinearRegression','RandomForestRegressor','XGBRegressor']])])]):
+            with st.spinner(f"🔍 Tuning {model_name}..."):
+                try:
+                    st.write(f"➡️ Starting model: `{model_name}`")
+                    if len(X_train) <= 100000:
+                        search = GridSearchCV(model, param_grid, cv=5, n_jobs=-1, scoring=self._get_scoring())
+                    else:
+                        search = RandomizedSearchCV(model, param_grid, n_iter=10, cv=5, n_jobs=-1, scoring=self._get_scoring(), random_state=42)
 
-            if score > best_score:
-                best_score = score
-                self.best_model = search.best_estimator_
+                    search.fit(X_train, y_train)
+                    score = search.score(X_test, y_test)
 
-    def get_params(self, model_name):
-        if model_name == 'LogisticRegression':
-            return {'C': [0.01, 0.1, 1, 10]}
-        elif model_name == 'RandomForest':
-            return {'n_estimators': [100, 200], 'max_depth': [None, 10, 20]}
-        elif model_name == 'XGBoost':
-            return {'n_estimators': [100, 200], 'learning_rate': [0.01, 0.1], 'max_depth': [3, 6]}
-        elif model_name == 'LinearRegression':
-            return {}
-        elif model_name == 'RandomForestRegressor':
-            return {'n_estimators': [100, 200], 'max_depth': [None, 10, 20]}
-        elif model_name == 'XGBRegressor':
-            return {'n_estimators': [100, 200], 'learning_rate': [0.01, 0.1], 'max_depth': [3, 6]}
-        return {}
+                    st.success(f"✅ {model_name} Score: {score:.4f}")
 
-    def get_scoring(self):
-        return 'roc_auc' if self.task_type == 'classification' else 'r2'
+                    if self.task_type == 'classification':
+                        if score > self.best_score:
+                            self.best_score = score
+                            self.best_model = search.best_estimator_
+                    else:
+                        if score < self.best_score:
+                            self.best_score = score
+                            self.best_model = search.best_estimator_
 
-    def evaluate(self, y_true, y_pred):
-        if self.task_type == 'classification':
-            return roc_auc_score(y_true, y_pred)
+                except Exception as e:
+                    st.error(f"❌ Error with model {model_name}: {e}")
+
+            progress.progress((i + 1) / total)
+
+        if self.best_model is not None:
+            st.success(f"🏆 Best Model: {type(self.best_model).__name__} with score {self.best_score:.4f}")
         else:
-            return r2_score(y_true, y_pred)
+            st.warning("⚠️ No model was successfully trained.")
 
+    def _get_scoring(self):
+        return 'accuracy' if self.task_type == 'classification' else 'neg_mean_squared_error'
 
 class PipelineSaver:
     def __init__(self, path='saved_pipeline'):
