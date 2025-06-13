@@ -57,7 +57,7 @@ if uploaded_file and target_col and run_button:
         st.success("✅ Feature Engineering Done!")
 
         st.info("🧠 Training and Tuning Models...")
-        trainer = ModelTrainer(task_type=task_type, models=model_select if model_select else 'all', eval_metrics=eval_metrics)
+        trainer = ModelTrainer(task_type=task_type, models=model_select if model_select else 'all', eval_metrics=metrics)
         trainer.select_models()
 
         progress_bar = st.progress(0)
