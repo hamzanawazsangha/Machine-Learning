@@ -88,9 +88,9 @@ class ModelTrainer:
         self.model_scores = {}
         self.best_model = None
         self.best_score = -float('inf') if task_type == 'classification' else float('inf')
-        self.selected_metrics = metrics or []
+        self.selected_metrics = metrics or []  # This stores the metrics
         self.models_dict = {}
-
+    
     def select_models(self):
         classification_models = {
             'LogisticRegression': (LogisticRegression(), {'C': [0.1, 1, 10]}),
