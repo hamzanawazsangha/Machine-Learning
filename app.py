@@ -22,7 +22,7 @@ if task_type == "classification":
         "LogisticRegression", "DecisionTreeClassifier", "RandomForestClassifier",
         "XGBClassifier", "GradientBoostingClassifier", "SVC", "KNeighborsClassifier"
     ]
-    metric_options = ["accuracy", "roc_auc", "confusion_matrix", "classification_report"]
+    metric_options = ["accuracy", "roc_auc", "f1_score", "confusion_matrix"]
 elif task_type == "regression":
     model_options = [
         "LinearRegression", "DecisionTreeRegressor", "RandomForestRegressor",
@@ -57,67 +57,63 @@ if uploaded_file and target_col and run_button:
         st.success("✅ Feature Engineering Done!")
 
         st.info("🧠 Training and Tuning Models...")
-        trainer = ModelTrainer(task_type=task_type, models=model_select if model_select else 'all', eval_metrics=metrics)
+        trainer = ModelTrainer(task_type=task_type, models=model_select if model_select else 'all', metrics=eval_metrics)
         trainer.select_models()
 
         progress_bar = st.progress(0)
         total_models = len(trainer.models)
-        trained_models_info = []
-
-        for i, model in enumerate(trainer.models):
-            st.write(f"🔄 Tuning Model: `{model}`")
-            trainer.tune_model(model, X_train, y_train, X_test, y_test)
-            scores = trainer.evaluate_model(model, X_test, y_test)
-            trained_models_info.append((model, scores))
-            progress_bar.progress((i + 1) / total_models)
+        
+        # Train and tune models
+        trainer.tune_and_train(X_train, y_train, X_test, y_test)
 
         st.success("✅ All Models Trained!")
 
         st.subheader("📊 Evaluation Results")
-        for model, score in trained_models_info:
-            st.write(f"Model: {model}")
-            st.json(score)
+        for model_name, score in trainer.model_scores.items():
+            st.write(f"Model: {model_name}")
+            st.write(f"Score: {score:.4f}")
 
-        st.success(f"🏆 Best Model: {trainer.best_model_name}")
-        st.write(trainer.best_model)
+        if trainer.best_model is not None:
+            st.success(f"🏆 Best Model: {type(trainer.best_model).__name__} with score {trainer.best_score:.4f}")
+        else:
+            st.warning("⚠️ No model was successfully trained.")
 
         st.info("💾 Saving All Models and Pipeline...")
         saver = PipelineSaver()
-        all_saved_paths = saver.save_all(trainer.models_dict, pre)
+        zip_path = saver.save(trainer.best_model, pre)
 
-        zip_path = "automl_models_bundle.zip"
-        with zipfile.ZipFile(zip_path, 'w') as zipf:
-            for file_path in all_saved_paths:
-                zipf.write(file_path, arcname=os.path.basename(file_path))
-
-        st.download_button("⬇️ Download All Models and Artifacts", open(zip_path, "rb"), file_name=zip_path)
+        with open(zip_path, "rb") as f:
+            st.download_button(
+                "⬇️ Download All Models and Artifacts",
+                f,
+                file_name="automl_artifacts.zip",
+                mime="application/zip"
+            )
 
         st.subheader("🧪 How to Use the Saved Pipeline")
         st.code('''
-import pickle
+import joblib
 import pandas as pd
 
 # Load files
-with open("scaler.pkl", "rb") as f:
-    scaler = pickle.load(f)
-with open("encoder.pkl", "rb") as f:
-    encoder = pickle.load(f)
-with open("best_model.pkl", "rb") as f:
-    model = pickle.load(f)
+scaler = joblib.load("scaler.pkl")
+model = joblib.load("best_model.pkl")
 
 # Preprocess new data (same steps as training)
 new_data = pd.read_csv("new_data.csv")
+# Apply the same preprocessing steps you used on your training data
+# Then scale:
 new_data_scaled = scaler.transform(new_data)
 predictions = model.predict(new_data_scaled)
         ''', language="python")
 
         # Clean up temporary files
-        for path in all_saved_paths:
-            os.remove(path)
         os.remove(zip_path)
+        shutil.rmtree(saver.path)
 
     except Exception as e:
         st.error(f"❌ An error occurred: {e}")
+        st.error(str(e))
 
 elif run_button:
     st.warning("⚠️ Please upload a dataset and provide the target column name.")
