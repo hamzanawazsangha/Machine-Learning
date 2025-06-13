@@ -4,15 +4,21 @@ import pandas as pd
 import numpy as np
 import os
 import joblib
+import streamlit as st
+import zipfile
 from sklearn.model_selection import train_test_split, GridSearchCV, RandomizedSearchCV
-from sklearn.preprocessing import StandardScaler, LabelEncoder, OrdinalEncoder, OneHotEncoder, PowerTransformer
+from sklearn.preprocessing import StandardScaler, LabelEncoder, OneHotEncoder
 from sklearn.impute import SimpleImputer
-from sklearn.compose import ColumnTransformer
-from sklearn.pipeline import Pipeline
-from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, mean_squared_error, r2_score
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.metrics import (
+    accuracy_score, f1_score, roc_auc_score,
+    mean_squared_error, r2_score, mean_absolute_error
+)
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor, GradientBoostingClassifier, GradientBoostingRegressor
+from sklearn.linear_model import LogisticRegression, LinearRegression, Ridge, Lasso, ElasticNet
+from sklearn.svm import SVC, SVR
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
 from xgboost import XGBClassifier, XGBRegressor
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
 from imblearn.over_sampling import SMOTE
 
 
@@ -26,55 +32,38 @@ class DataPreprocessor:
 
     def preprocess(self, df):
         df = df.copy()
-    
-        # Drop rows with all NaNs or unnamed columns
         df.dropna(axis=0, how='all', inplace=True)
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-    
-        # Drop rows with missing target
         df.dropna(subset=[self.target_column], inplace=True)
-    
-        # Separate target AFTER handling NaNs
+
         y = df[self.target_column]
         X = df.drop(columns=[self.target_column])
-    
-        # Identify categorical and numerical columns
+
         cat_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
         num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-    
-        # Impute missing values
+
         cat_imputer = SimpleImputer(strategy='most_frequent')
         num_imputer = SimpleImputer(strategy='mean')
         X[cat_cols] = pd.DataFrame(cat_imputer.fit_transform(X[cat_cols]), columns=cat_cols, index=X.index)
         X[num_cols] = pd.DataFrame(num_imputer.fit_transform(X[num_cols]), columns=num_cols, index=X.index)
-    
-        # Encode target if classification or regression
-        if self.task_type != 'unsupervised':
-            if y.dtype == 'object':
-                le = LabelEncoder()
-                y = pd.Series(le.fit_transform(y), index=y.index)
-                self.encoders['target'] = le
-    
-        # OneHotEncode categorical features
+
+        if self.task_type != 'unsupervised' and y.dtype == 'object':
+            le = LabelEncoder()
+            y = pd.Series(le.fit_transform(y), index=y.index)
+            self.encoders['target'] = le
+
         ohe = OneHotEncoder(handle_unknown='ignore', sparse=False)
         X_encoded = pd.DataFrame(ohe.fit_transform(X[cat_cols]), columns=ohe.get_feature_names_out(cat_cols), index=X.index)
         self.encoders['ohe'] = ohe
-    
-        # Combine numerical and encoded categorical features
-        X_final = pd.concat([X[num_cols], X_encoded], axis=1)
-    
-        # Ensure index alignment
-        X_final = X_final.loc[y.index]
-    
+
+        X_final = pd.concat([X[num_cols], X_encoded], axis=1).loc[y.index]
         return X_final, y
 
     def scale_and_split(self, X, y):
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-
         self.scaler = StandardScaler()
         X_train_scaled = self.scaler.fit_transform(X_train)
         X_test_scaled = self.scaler.transform(X_test)
-
         return X_train_scaled, X_test_scaled, y_train, y_test
 
     def balance_data(self, X_train, y_train):
@@ -88,41 +77,53 @@ class DataPreprocessor:
 
 
 class ModelTrainer:
-    def __init__(self, task_type='classification', models='all'):
+    def __init__(self, task_type='classification', models='all', metrics=None):
         self.task_type = task_type
         self.model_names = models
         self.models = []
+        self.model_scores = {}
         self.best_model = None
         self.best_score = -float('inf') if task_type == 'classification' else float('inf')
+        self.selected_metrics = metrics or []
 
     def select_models(self):
-        from sklearn.linear_model import LogisticRegression, LinearRegression
-        from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-        from xgboost import XGBClassifier, XGBRegressor
-
-        all_models = {
+        classification_models = {
             'LogisticRegression': (LogisticRegression(), {'C': [0.1, 1, 10]}),
-            'RandomForest': (RandomForestClassifier(), {'n_estimators': [50, 100], 'max_depth': [5, 10]}),
-            'XGBoost': (XGBClassifier(eval_metric='mlogloss'), {'n_estimators': [50, 100], 'learning_rate': [0.01, 0.1]}),
-            'LinearRegression': (LinearRegression(), {}),
-            'RandomForestRegressor': (RandomForestRegressor(), {'n_estimators': [50, 100], 'max_depth': [5, 10]}),
-            'XGBRegressor': (XGBRegressor(), {'n_estimators': [50, 100], 'learning_rate': [0.01, 0.1]})
+            'DecisionTreeClassifier': (DecisionTreeClassifier(), {'max_depth': [5, 10]}),
+            'RandomForestClassifier': (RandomForestClassifier(), {'n_estimators': [50, 100], 'max_depth': [5, 10]}),
+            'XGBClassifier': (XGBClassifier(eval_metric='mlogloss'), {'n_estimators': [50, 100], 'learning_rate': [0.01, 0.1]}),
+            'GradientBoostingClassifier': (GradientBoostingClassifier(), {'n_estimators': [50, 100]}),
+            'SVC': (SVC(), {'C': [0.1, 1, 10]}),
+            'KNeighborsClassifier': (KNeighborsClassifier(), {'n_neighbors': [3, 5, 7]})
         }
 
+        regression_models = {
+            'LinearRegression': (LinearRegression(), {}),
+            'DecisionTreeRegressor': (DecisionTreeRegressor(), {'max_depth': [5, 10]}),
+            'RandomForestRegressor': (RandomForestRegressor(), {'n_estimators': [50, 100], 'max_depth': [5, 10]}),
+            'XGBRegressor': (XGBRegressor(), {'n_estimators': [50, 100], 'learning_rate': [0.01, 0.1]}),
+            'GradientBoostingRegressor': (GradientBoostingRegressor(), {'n_estimators': [50, 100]}),
+            'SVR': (SVR(), {'C': [0.1, 1, 10]}),
+            'KNeighborsRegressor': (KNeighborsRegressor(), {'n_neighbors': [3, 5, 7]}),
+            'Lasso': (Lasso(), {'alpha': [0.01, 0.1, 1]}),
+            'Ridge': (Ridge(), {'alpha': [0.01, 0.1, 1]}),
+            'ElasticNet': (ElasticNet(), {'alpha': [0.01, 0.1, 1]})
+        }
+
+        all_models = classification_models if self.task_type == 'classification' else regression_models
+
         if self.model_names == 'all':
-            self.models = [v for k, v in all_models.items() if self.task_type in k.lower()]
+            self.models = [(k, v[0], v[1]) for k, v in all_models.items()]
         else:
-            self.models = [all_models[name] for name in self.model_names if name in all_models]
+            self.models = [(name, all_models[name][0], all_models[name][1]) for name in self.model_names if name in all_models]
 
     def tune_and_train(self, X_train, y_train, X_test, y_test):
         total = len(self.models)
         progress = st.progress(0)
 
-        for i, (model_name, model, param_grid) in enumerate(
-            [(name, m, p) for (m, p), name in zip(self.models, [name for name in (self.model_names if self.model_names != 'all' else [name for name in ['LogisticRegression','RandomForest','XGBoost','LinearRegression','RandomForestRegressor','XGBRegressor']])])]):
+        for i, (model_name, model, param_grid) in enumerate(self.models):
             with st.spinner(f"🔍 Tuning {model_name}..."):
                 try:
-                    st.write(f"➡️ Starting model: `{model_name}`")
                     if len(X_train) <= 100000:
                         search = GridSearchCV(model, param_grid, cv=5, n_jobs=-1, scoring=self._get_scoring())
                     else:
@@ -130,8 +131,7 @@ class ModelTrainer:
 
                     search.fit(X_train, y_train)
                     score = search.score(X_test, y_test)
-
-                    st.success(f"✅ {model_name} Score: {score:.4f}")
+                    self.model_scores[model_name] = score
 
                     if self.task_type == 'classification':
                         if score > self.best_score:
@@ -142,9 +142,9 @@ class ModelTrainer:
                             self.best_score = score
                             self.best_model = search.best_estimator_
 
+                    st.success(f"✅ {model_name} Score: {score:.4f}")
                 except Exception as e:
                     st.error(f"❌ Error with model {model_name}: {e}")
-
             progress.progress((i + 1) / total)
 
         if self.best_model is not None:
@@ -154,6 +154,7 @@ class ModelTrainer:
 
     def _get_scoring(self):
         return 'accuracy' if self.task_type == 'classification' else 'neg_mean_squared_error'
+
 
 class PipelineSaver:
     def __init__(self, path='saved_pipeline'):
@@ -168,17 +169,10 @@ class PipelineSaver:
         if preprocessor.smote:
             joblib.dump(preprocessor.smote, os.path.join(self.path, 'smote.pkl'))
 
-
-# Example Usage:
-# df = pd.read_csv('your_dataset.csv')
-# pre = DataPreprocessor(task_type='classification', target_column='target')
-# X, y = pre.preprocess(df)
-# X_train, X_test, y_train, y_test = pre.scale_and_split(X, y)
-# X_train, y_train = pre.balance_data(X_train, y_train)
-#
-# trainer = ModelTrainer(task_type='classification')
-# trainer.select_models()
-# trainer.tune_and_train(X_train, y_train, X_test, y_test)
-#
-# saver = PipelineSaver()
-# saver.save(trainer.best_model, pre)
+        zip_path = os.path.join(self.path, 'automl_artifacts.zip')
+        with zipfile.ZipFile(zip_path, 'w') as zf:
+            for root, _, files in os.walk(self.path):
+                for file in files:
+                    if file.endswith('.pkl'):
+                        zf.write(os.path.join(root, file), arcname=file)
+        return zip_path
