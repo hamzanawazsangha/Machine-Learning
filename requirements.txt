@@ -1,7 +1,7 @@
 streamlit==1.28.0
 pandas==2.0.3
 numpy==1.24.3
-scikit-learn==1.3.2
+scikit-learn==1.3.2  # Critical fix for imblearn compatibility
 imbalanced-learn==0.10.1
 xgboost==1.7.5
 matplotlib==3.7.2
