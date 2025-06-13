@@ -71,7 +71,31 @@ class DataAnalyzer:
         
         # Target analysis
         results['target_stats'] = self._analyze_target(df[self.target_column])
-        
+
+        # Generate summary text
+    summary = []
+    summary.append(f"Dataset Shape: {df.shape}")
+    summary.append("\nData Types:")
+    for dtype, count in results['dtypes'].items():
+        summary.append(f"  {dtype}: {count}")
+    
+    if results['missing_values']:
+        summary.append("\nMissing Values:")
+        for col, count in results['missing_values'].items():
+            summary.append(f"  {col}: {count}")
+    else:
+        summary.append("\nNo missing values found.")
+    
+    summary.append("\nTarget Variable Analysis:")
+    for stat, value in results['target_stats'].items():
+        if isinstance(value, dict):
+            summary.append(f"  {stat}:")
+            for k, v in value.items():
+                summary.append(f"    {k}: {v}")
+        else:
+            summary.append(f"  {stat}: {value}")
+    
+    results['summary'] = "\n".join(summary)
         # Numeric features analysis
         if numeric_cols:
             results['numeric_stats'] = self._analyze_numeric_features(df[numeric_cols])
