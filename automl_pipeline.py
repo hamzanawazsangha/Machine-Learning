@@ -26,37 +26,46 @@ class DataPreprocessor:
 
     def preprocess(self, df):
         df = df.copy()
+    
         # Drop rows with all NaNs or unnamed columns
         df.dropna(axis=0, how='all', inplace=True)
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-
-        # Separate target
+    
+        # Drop rows with missing target
+        df.dropna(subset=[self.target_column], inplace=True)
+    
+        # Separate target AFTER handling NaNs
         y = df[self.target_column]
         X = df.drop(columns=[self.target_column])
-
-        # Identify categorical and numerical
+    
+        # Identify categorical and numerical columns
         cat_cols = X.select_dtypes(include=['object', 'category']).columns.tolist()
         num_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-
-        # Impute missing
+    
+        # Impute missing values
         cat_imputer = SimpleImputer(strategy='most_frequent')
         num_imputer = SimpleImputer(strategy='mean')
-        X[cat_cols] = cat_imputer.fit_transform(X[cat_cols])
-        X[num_cols] = num_imputer.fit_transform(X[num_cols])
-
-        # Encode categorical
+        X[cat_cols] = pd.DataFrame(cat_imputer.fit_transform(X[cat_cols]), columns=cat_cols, index=X.index)
+        X[num_cols] = pd.DataFrame(num_imputer.fit_transform(X[num_cols]), columns=num_cols, index=X.index)
+    
+        # Encode target if classification or regression
         if self.task_type != 'unsupervised':
             if y.dtype == 'object':
                 le = LabelEncoder()
-                y = le.fit_transform(y)
+                y = pd.Series(le.fit_transform(y), index=y.index)
                 self.encoders['target'] = le
-
+    
+        # OneHotEncode categorical features
         ohe = OneHotEncoder(handle_unknown='ignore', sparse=False)
-        X_encoded = pd.DataFrame(ohe.fit_transform(X[cat_cols]), columns=ohe.get_feature_names_out(cat_cols))
+        X_encoded = pd.DataFrame(ohe.fit_transform(X[cat_cols]), columns=ohe.get_feature_names_out(cat_cols), index=X.index)
         self.encoders['ohe'] = ohe
-
+    
+        # Combine numerical and encoded categorical features
         X_final = pd.concat([X[num_cols], X_encoded], axis=1)
-
+    
+        # Ensure index alignment
+        X_final = X_final.loc[y.index]
+    
         return X_final, y
 
     def scale_and_split(self, X, y):
